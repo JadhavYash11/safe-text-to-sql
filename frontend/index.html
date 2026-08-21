@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Safe Text-to-SQL</title>
+  <style>
+    :root { color-scheme: light; --ink: #14213d; --muted: #62708a; --paper: #f6f8fc; --line: #dbe2ef; --accent: #3456d1; --good: #087d4e; --warn: #a66200; --danger: #b42318; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 1120px; margin: 0 auto; padding: 56px 24px 80px; }
+    header { margin-bottom: 32px; }
+    h1 { margin: 0; font-size: clamp(2rem, 4vw, 3rem); letter-spacing: -.04em; }
+    h1 span { color: var(--accent); }
+    h2 { margin: 0 0 12px; font-size: 1.1rem; }
+    p { color: var(--muted); margin: 8px 0; }
+    .card { background: white; border: 1px solid var(--line); border-radius: 16px; padding: 24px; box-shadow: 0 8px 32px rgba(20,33,61,.05); }
+    textarea { width: 100%; min-height: 112px; resize: vertical; border: 1px solid #b9c4da; border-radius: 10px; padding: 14px; font: inherit; color: var(--ink); }
+    textarea:focus { outline: 3px solid #dce4ff; border-color: var(--accent); }
+    .actions, .examples, .metrics, .feedback { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 16px; }
+    button { cursor: pointer; border: 1px solid #bcc7dc; background: white; border-radius: 9px; color: var(--ink); padding: 9px 13px; font: inherit; }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 650; padding: 11px 16px; }
+    button.primary:disabled { opacity: .6; cursor: wait; }
+    .example { font-size: .85rem; background: #f8faff; }
+    label { color: var(--muted); font-size: .93rem; }
+    #output { margin-top: 22px; }
+    .hidden { display: none; }
+    .notice { border-radius: 10px; padding: 14px; margin: 12px 0; }
+    .notice.error { background: #fff0ef; color: var(--danger); border: 1px solid #ffc9c5; }
+    .notice.warning { background: #fff8eb; color: var(--warn); border: 1px solid #f7d89b; }
+    .notice.success { background: #ecfdf3; color: var(--good); border: 1px solid #b7ebcf; }
+    .metric { flex: 1; min-width: 120px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcff; }
+    .metric strong { display: block; font-size: 1.4rem; }
+    pre { overflow-x: auto; margin: 0; background: #101827; color: #e8efff; border-radius: 10px; padding: 16px; font: .86rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 650; background: #fbfcff; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    details { margin-top: 18px; } summary { cursor: pointer; font-weight: 650; } .small { font-size: .86rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1><span>🛡</span> Safe Text-to-SQL</h1>
+      <p>Ask a business question. The system creates SQL, checks it, runs it safely, and explains how confident it is.</p>
+    </header>
+    <section class="card">
+      <h2>Your question</h2>
+      <textarea id="question" placeholder="Show gross revenue by month" aria-label="Business question"></textarea>
+      <div class="examples" aria-label="Example questions">
+        <button class="example" data-question="Show gross revenue by month">Gross revenue by month</button>
+        <button class="example" data-question="Which customers have the highest net revenue?">Top net-revenue customers</button>
+        <button class="example" data-question="How many paid orders are there?">Count paid orders</button>
+        <button class="example" data-question="Show sales by product category">Sales by category</button>
+      </div>
+      <div class="actions">
+        <button id="run" class="primary">Generate and run safely</button>
+        <label><input id="alternative" type="checkbox"> Validate with a second SQL approach</label>
+      </div>
+    </section>
+    <section id="output" class="hidden" aria-live="polite"></section>
+  </main>
+  <script>
+    const question = document.querySelector('#question');
+    const output = document.querySelector('#output');
+    const run = document.querySelector('#run');
+    let lastResult = null;
+    document.querySelectorAll('.example').forEach(button => button.addEventListener('click', () => { question.value = button.dataset.question; question.focus(); }));
+
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#039;', '"':'&quot;' }[character]));
+    const errorText = detail => typeof detail === 'string' ? detail : detail?.message || JSON.stringify(detail);
+    function show(message, type) { output.classList.remove('hidden'); output.innerHTML = `<div class="notice ${type}">${escapeHtml(message)}</div>`; }
+    function rowsTable(rows) {
+      if (!rows.length) return '<p>No rows were returned.</p>';
+      const columns = Object.keys(rows[0]);
+      return `<div class="table-wrap"><table><thead><tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${columns.map(c => `<td>${escapeHtml(row[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+    }
+    function render(result) {
+      lastResult = result;
+      output.classList.remove('hidden');
+      if (result.needs_clarification) {
+        output.innerHTML = `<div class="notice warning"><strong>Clarification needed.</strong> ${escapeHtml(result.message)}<div class="examples">${result.options.map(option => `<button class="option example" data-question="${escapeHtml(option.example_question)}">${escapeHtml(option.label)} — ${escapeHtml(option.description)}</button>`).join('')}</div></div>`;
+        output.querySelectorAll('.option').forEach(button => button.addEventListener('click', () => { question.value = button.dataset.question; run.click(); }));
+        return;
+      }
+      const warnings = result.warnings.length ? `<div class="notice warning"><strong>Guardrail notes:</strong> ${result.warnings.map(w => escapeHtml(w.message)).join(' ')}</div>` : '';
+      const checks = result.confidence_breakdown.map(check => `<li><strong>${escapeHtml(check.name.replaceAll('_',' '))}:</strong> ${Math.round(check.score * 100)}% — ${escapeHtml(check.message)}</li>`).join('');
+      output.innerHTML = `
+        <div class="card">
+          <div class="metrics"><div class="metric"><span>Confidence</span><strong>${Math.round(result.confidence * 100)}%</strong></div><div class="metric"><span>Rows returned</span><strong>${result.row_count}</strong></div><div class="metric"><span>Execution</span><strong>${result.execution_ms} ms</strong></div></div>
+          ${warnings}
+          <h2>Generated SQL</h2><pre>${escapeHtml(result.generated.sql)}</pre><p>${escapeHtml(result.generated.explanation)}</p>
+          <h2>Results</h2>${rowsTable(result.rows)}
+          <details><summary>Why this confidence score?</summary><ul class="small">${checks}</ul></details>
+          <details><summary>Query plan (EXPLAIN)</summary><pre>${escapeHtml(result.explain_plan)}</pre></details>
+          <div class="feedback"><span class="small">Was this result correct?</span><button id="correct">✓ Yes</button><button id="incorrect">✗ No</button></div>
+        </div>`;
+      document.querySelector('#correct').addEventListener('click', () => sendFeedback(true));
+      document.querySelector('#incorrect').addEventListener('click', () => sendFeedback(false));
+    }
+    async function sendFeedback(correct) {
+      await fetch('/v1/feedback', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({question: question.value, sql: lastResult.generated.sql, correct}) });
+      alert(correct ? 'Thanks — positive feedback saved.' : 'Saved as a future evaluation case.');
+    }
+    async function submit() {
+      if (question.value.trim().length < 3) return show('Please enter a longer question.', 'warning');
+      run.disabled = true; run.textContent = 'Checking and running…'; show('Generating SQL and applying guardrails…', 'success');
+      try {
+        const response = await fetch('/v1/query', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({question: question.value, verify_with_alternative: document.querySelector('#alternative').checked}) });
+        const body = await response.json();
+        if (!response.ok) throw new Error(errorText(body.detail));
+        render(body);
+      } catch (error) { show(`Request failed: ${error.message}`, 'error'); }
+      finally { run.disabled = false; run.textContent = 'Generate and run safely'; }
+    }
+    run.addEventListener('click', submit);
+    question.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') submit(); });
+  </script>
+</body>
+</html>

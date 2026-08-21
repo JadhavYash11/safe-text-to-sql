@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+data/*.duckdb
+data/*.jsonl
+.pytest_cache/
+.ruff_cache/
+safe_text_to_sql.egg-info/
